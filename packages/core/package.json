@@ -1,0 +1,9 @@
+{
+  "name": "@workspace/core",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./ExecutiveMemory": "./src/ExecutiveMemory.ts",
+    "./StageLedger": "./src/StageLedger.ts"
+  }
+}

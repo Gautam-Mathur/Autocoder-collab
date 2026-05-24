@@ -1,0 +1,30 @@
+{
+  "capturedAt": "2026-05-23T06:59:52.084Z",
+  "label": "verify-gate-abort",
+  "fileCount": 3,
+  "files": [
+    "src/components/data-table.tsx",
+    "src/__tests__/setup.ts",
+    "src/__tests__/components.test.ts"
+  ],
+  "errors": [
+    {
+      "file": "src/components/data-table.tsx",
+      "line": 32,
+      "column": 0,
+      "message": "Unexpected \"}\""
+    },
+    {
+      "file": "src/__tests__/setup.ts",
+      "line": 53,
+      "column": 59,
+      "message": "Expected \";\" but found \"{\""
+    },
+    {
+      "file": "src/__tests__/components.test.ts",
+      "line": 45,
+      "column": 42,
+      "message": "Expected \">\" but found \"/\""
+    }
+  ]
+}

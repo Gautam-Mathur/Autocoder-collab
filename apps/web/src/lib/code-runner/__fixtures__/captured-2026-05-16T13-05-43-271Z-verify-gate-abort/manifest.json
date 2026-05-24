@@ -1,0 +1,44 @@
+{
+  "capturedAt": "2026-05-16T13:05:43.272Z",
+  "label": "verify-gate-abort",
+  "fileCount": 5,
+  "files": [
+    "src/lib/utils.ts",
+    "src/components/data-table.tsx",
+    "shared/schema.ts",
+    "src/__tests__/setup.ts",
+    "src/__tests__/components.test.ts"
+  ],
+  "errors": [
+    {
+      "file": "src/lib/utils.ts",
+      "line": 45,
+      "column": 4,
+      "message": "Unexpected \".\""
+    },
+    {
+      "file": "src/components/data-table.tsx",
+      "line": 32,
+      "column": 0,
+      "message": "Unexpected \"}\""
+    },
+    {
+      "file": "shared/schema.ts",
+      "line": 107,
+      "column": 18,
+      "message": "Expected \";\" but found \"ContactMessage\""
+    },
+    {
+      "file": "src/__tests__/setup.ts",
+      "line": 53,
+      "column": 59,
+      "message": "Expected \";\" but found \"{\""
+    },
+    {
+      "file": "src/__tests__/components.test.ts",
+      "line": 44,
+      "column": 41,
+      "message": "Expected \">\" but found \"/\""
+    }
+  ]
+}

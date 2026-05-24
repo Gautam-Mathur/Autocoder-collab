@@ -1,0 +1,40 @@
+import { Router, type IRouter } from "express";
+import healthRouter from "./health";
+import promptRouter from "./prompt";
+import stacksRouter from "./stacks";
+import aiRouter from "./ai";
+import cacheRouter from "./cache";
+import conversationsRouter from "./conversations";
+import slmRouter from "./slm";
+import logsRouter from "./logs";
+import modulesRouter from "./modules";
+import previewRouter from "./preview";
+import autoFixRouter from "./auto-fix";
+import diagnosticsRouter from "./diagnostics";
+import repairRouter from "./repair";
+import mcpRouter from "./mcp";
+import telemetryRouter from "./telemetry";
+import planGraphRouter from "./plan-graph";
+import pluginsRouter from "./plugins";
+
+const router: IRouter = Router();
+
+router.use(healthRouter);
+router.use(promptRouter);
+router.use(stacksRouter);
+router.use(aiRouter);
+router.use(cacheRouter);
+router.use(conversationsRouter);
+router.use(slmRouter);
+router.use(logsRouter);
+router.use(modulesRouter);
+router.use(previewRouter);
+router.use(autoFixRouter);
+router.use(diagnosticsRouter);
+router.use(repairRouter);
+router.use(mcpRouter);
+router.use(telemetryRouter);
+router.use(planGraphRouter);
+router.use(pluginsRouter);
+
+export default router;

@@ -1,0 +1,23 @@
+{
+  "name": "autocoder",
+  "version": "1.0.0",
+  "description": "AI-powered code generation platform — runs locally with Ollama or any OpenAI-compatible model server",
+  "license": "MIT",
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @workspace/api-server --filter @workspace/autocoder run dev",
+    "dev:api": "pnpm --filter @workspace/api-server run dev",
+    "dev:web": "pnpm --filter @workspace/autocoder run dev",
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+  },
+  "private": true,
+  "devDependencies": {
+    "prettier": "^3.8.1",
+    "typescript": "~5.9.2"
+  },
+  "dependencies": {
+    "@replit/connectors-sdk": "^0.3.0",
+    "octokit": "^5.0.5"
+  }
+}
