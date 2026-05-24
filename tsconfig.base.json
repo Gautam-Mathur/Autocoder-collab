@@ -5,6 +5,9 @@
     "moduleResolution": "bundler",
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "baseUrl": ".",
+    "paths": {
+      "@workspace/core/*": ["packages/core/src/*"]
+    },
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,

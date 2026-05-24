@@ -1,30 +1,40 @@
-export type AgentStage = 'Queen' | 'Planner' | 'Architect' | 'System' | 'Designer' | 'Coder' | 'Debugger' | 'Reviewer' | 'Tester';
+export type AgentStage =
+  | 'Queen'
+  | 'Planner'
+  | 'Architect'
+  | 'System'
+  | 'Designer'
+  | 'Coder'
+  | 'Debugger'
+  | 'Reviewer'
+  | 'Tester';
 
-export interface DecisionLogEntry {
-  stage: AgentStage;
+export interface ExecutiveMemoryDecision {
+  agent: AgentStage;
+  field: string;
+  value: unknown;
   timestamp: number;
-  decision: string;
-  context: any;
+  rationale?: string;
 }
 
 export class ExecutiveMemory {
-  public structuredOutputs: Map<AgentStage, any> = new Map();
-  public decisionLog: DecisionLogEntry[] = [];
-  public invalidated: Set<AgentStage> = new Set();
+  taskSpec: unknown | null = null;
+  planner: unknown | null = null;
+  architect: unknown | null = null;
+  system: unknown | null = null;
+  designer: unknown | null = null;
+  coder: unknown | null = null;
+  debugger: unknown | null = null;
+  security: unknown | null = null;
+  reviewer: unknown | null = null;
+  tester: unknown | null = null;
 
-  recordDecision(stage: AgentStage, decision: string, context?: any) {
-    this.decisionLog.push({ stage, timestamp: Date.now(), decision, context });
-  }
+  decisions: ExecutiveMemoryDecision[] = [];
+  invalidated: Set<AgentStage> = new Set();
 
-  getOutput<T>(stage: AgentStage): T | undefined {
-    return this.structuredOutputs.get(stage);
-  }
-
-  setOutput(stage: AgentStage, output: any) {
-    this.structuredOutputs.set(stage, output);
-  }
-
-  isInvalidated(stage: AgentStage): boolean {
-    return this.invalidated.has(stage);
+  clearInvalidated(): void {
+    this.invalidated.clear();
   }
 }
+
+export default ExecutiveMemory;

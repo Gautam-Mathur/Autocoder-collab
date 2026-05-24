@@ -9,7 +9,7 @@
     "dev:web": "pnpm --filter @workspace/autocoder run dev",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"@workspace/*\" --if-present run typecheck"
   },
   "private": true,
   "devDependencies": {

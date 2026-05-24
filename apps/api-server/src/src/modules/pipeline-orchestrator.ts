@@ -1065,7 +1065,7 @@ async function runRuFloAdapter(
           `The ${agent} agent exceeded its health budget and was halted. Pipeline will continue with whatever earlier agents produced; downstream contract gates may flag missing outputs.`);
       }
     },
-  });
+  } as any);
   // Conversation id is best-effort — falls back to project name when absent.
   const conversationId =
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
