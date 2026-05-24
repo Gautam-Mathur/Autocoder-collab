@@ -725,6 +725,8 @@ importers:
         specifier: 'catalog:'
         version: 3.25.76
 
+  packages/core: {}
+
   packages/db:
     dependencies:
       drizzle-orm:
