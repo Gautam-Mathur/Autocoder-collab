@@ -9,6 +9,7 @@
     "esModuleInterop": true,
     "allowImportingTsExtensions": true,
     "types": ["node", "vite/client"],
+    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     }
