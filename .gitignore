@@ -48,7 +48,6 @@ Thumbs.db
 .cache/
 .local/
 
-./apps/api-server/cache
-.implementation
-antigravity.cli
+./apps/api-server/cache/
+.antigravitycli
 implementation.md
