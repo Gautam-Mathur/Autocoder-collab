@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exportedAt": "2026-05-23T06:58:41.968Z",
+  "exportedAt": "2026-05-24T10:48:29.451Z",
   "patterns": [
     {
       "patternType": "entity-structure",
@@ -266,7 +266,7 @@
       "patternType": "tech-choice",
       "patternKey": "file-structure-general",
       "patternValue": {
-        "fileCount": 53,
+        "fileCount": 67,
         "recentPaths": [
           "src/lib/utils.ts",
           "src/lib/queryClient.ts",
@@ -288,6 +288,7 @@
           "src/components/search-bar.tsx",
           "src/components/empty-state.tsx",
           "src/components/status-badge.tsx",
+          "src/components/kpi-card.tsx",
           "index.html",
           "src/main.tsx",
           "vite.config.ts",
@@ -296,12 +297,11 @@
           "tsconfig.json",
           "tsconfig.node.json",
           "src/index.css",
-          "shared/schema.ts",
-          "server/db.ts"
+          "shared/schema.ts"
         ],
         "qualityScore": 76
       },
-      "successCount": 9,
+      "successCount": 11,
       "failureCount": 0,
       "reliability": 1
     },
@@ -367,7 +367,7 @@
           "taskCount": "text"
         }
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -409,7 +409,7 @@
           "commentCount": "text"
         }
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -435,7 +435,7 @@
           "taskId": "integer",
           "authorId": "integer",
           "content": "text",
-          "parentId": "integer",
+          "parentId": "number",
           "likes": "number",
           "status": "enum:visible,hidden,flagged",
           "createdAt": "datetime",
@@ -443,7 +443,7 @@
           "likeCount": "integer"
         }
       },
-      "successCount": 4,
+      "successCount": 5,
       "failureCount": 0,
       "reliability": 1
     },
@@ -489,7 +489,7 @@
           "fullName": "text"
         }
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -543,7 +543,7 @@
           }
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -591,7 +591,7 @@
           }
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -611,7 +611,7 @@
           "form-wizard view"
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -628,7 +628,7 @@
           "files"
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -648,7 +648,7 @@
           "form-wizard view"
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -667,7 +667,7 @@
           "labels"
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -684,7 +684,7 @@
           "labels"
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -700,7 +700,7 @@
           "quick-status-update"
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -718,7 +718,7 @@
           "form-wizard view"
         ]
       },
-      "successCount": 3,
+      "successCount": 4,
       "failureCount": 0,
       "reliability": 1
     },
@@ -734,7 +734,7 @@
           "upcoming-deadlines"
         ]
       },
-      "successCount": 3,
+      "successCount": 5,
       "failureCount": 0,
       "reliability": 1
     },
@@ -846,6 +846,317 @@
       "successCount": 1,
       "failureCount": 0,
       "reliability": 1
+    },
+    {
+      "patternType": "entity-structure",
+      "entityType": "MenuItem",
+      "patternKey": "entity-menuitem",
+      "patternValue": {
+        "recommended": [
+          "id",
+          "name",
+          "description",
+          "price",
+          "categoryId",
+          "imageUrl",
+          "available",
+          "allergens",
+          "prepTime",
+          "category",
+          "cuisine",
+          "cookTime",
+          "servings",
+          "difficulty",
+          "calories",
+          "ingredients",
+          "instructions",
+          "tags",
+          "rating",
+          "status",
+          "createdAt",
+          "orderItemCount"
+        ],
+        "fieldTypes": {
+          "id": "serial (auto-increment)",
+          "name": "text",
+          "description": "text",
+          "price": "integer",
+          "categoryId": "integer",
+          "imageUrl": "text",
+          "available": "boolean",
+          "allergens": "text[]",
+          "prepTime": "integer",
+          "category": "string",
+          "cuisine": "string",
+          "cookTime": "number",
+          "servings": "number",
+          "difficulty": "enum:easy,medium,hard",
+          "calories": "number",
+          "ingredients": "string",
+          "instructions": "string",
+          "tags": "string[]",
+          "rating": "number",
+          "status": "enum:draft,published,archived",
+          "createdAt": "datetime",
+          "orderItemCount": "text"
+        }
+      },
+      "successCount": 1,
+      "failureCount": 0,
+      "reliability": 1
+    },
+    {
+      "patternType": "entity-structure",
+      "entityType": "MenuCategory",
+      "patternKey": "entity-menucategory",
+      "patternValue": {
+        "recommended": [
+          "id",
+          "name",
+          "sortOrder",
+          "slug",
+          "description",
+          "parentId",
+          "imageUrl",
+          "status",
+          "createdAt"
+        ],
+        "fieldTypes": {
+          "id": "serial (auto-increment)",
+          "name": "text",
+          "sortOrder": "integer",
+          "slug": "string",
+          "description": "string",
+          "parentId": "number",
+          "imageUrl": "string",
+          "status": "enum:active,inactive",
+          "createdAt": "datetime"
+        }
+      },
+      "successCount": 1,
+      "failureCount": 0,
+      "reliability": 1
+    },
+    {
+      "patternType": "entity-structure",
+      "entityType": "Order",
+      "patternKey": "entity-order",
+      "patternValue": {
+        "recommended": [
+          "id",
+          "orderNumber",
+          "type",
+          "tableId",
+          "status",
+          "totalAmount",
+          "customerName",
+          "orderDate",
+          "subtotal",
+          "taxAmount",
+          "shippingCost",
+          "total",
+          "currency",
+          "shippingAddress",
+          "trackingNumber",
+          "notes",
+          "createdAt",
+          "orderItemCount",
+          "grandTotal"
+        ],
+        "fieldTypes": {
+          "id": "serial (auto-increment)",
+          "orderNumber": "text",
+          "type": "enum(dine-in,takeaway,delivery)",
+          "tableId": "integer",
+          "status": "enum(received,preparing,ready,served,completed,cancelled)",
+          "totalAmount": "integer",
+          "customerName": "text",
+          "orderDate": "date",
+          "subtotal": "number",
+          "taxAmount": "number",
+          "shippingCost": "number",
+          "total": "number",
+          "currency": "string",
+          "shippingAddress": "string",
+          "trackingNumber": "string",
+          "notes": "string",
+          "createdAt": "datetime",
+          "orderItemCount": "text",
+          "grandTotal": "text"
+        }
+      },
+      "successCount": 1,
+      "failureCount": 0,
+      "reliability": 1
+    },
+    {
+      "patternType": "entity-structure",
+      "entityType": "OrderItem",
+      "patternKey": "entity-orderitem",
+      "patternValue": {
+        "recommended": [
+          "id",
+          "orderId",
+          "menuItemId",
+          "quantity",
+          "specialNotes",
+          "unitPrice",
+          "totalPrice",
+          "discount",
+          "notes",
+          "createdAt",
+          "lineTotal"
+        ],
+        "fieldTypes": {
+          "id": "serial (auto-increment)",
+          "orderId": "integer",
+          "menuItemId": "integer",
+          "quantity": "integer",
+          "specialNotes": "text",
+          "unitPrice": "integer",
+          "totalPrice": "number",
+          "discount": "number",
+          "notes": "string",
+          "createdAt": "datetime",
+          "lineTotal": "text"
+        }
+      },
+      "successCount": 1,
+      "failureCount": 0,
+      "reliability": 1
+    },
+    {
+      "patternType": "entity-structure",
+      "entityType": "Reservation",
+      "patternKey": "entity-reservation",
+      "patternValue": {
+        "recommended": [
+          "id",
+          "customerName",
+          "phone",
+          "date",
+          "time",
+          "partySize",
+          "tableId",
+          "status",
+          "notes",
+          "bookingNumber",
+          "checkIn",
+          "checkOut",
+          "guestCount",
+          "totalPrice",
+          "specialRequests",
+          "lineTotal",
+          "duration",
+          "createdAt"
+        ],
+        "fieldTypes": {
+          "id": "serial (auto-increment)",
+          "customerName": "text",
+          "phone": "text",
+          "date": "date",
+          "time": "text",
+          "partySize": "integer",
+          "tableId": "integer",
+          "status": "enum(confirmed,seated,completed,cancelled,no-show)",
+          "notes": "text",
+          "bookingNumber": "string",
+          "checkIn": "datetime",
+          "checkOut": "datetime",
+          "guestCount": "number",
+          "totalPrice": "number",
+          "specialRequests": "string",
+          "lineTotal": "text",
+          "duration": "text",
+          "createdAt": "datetime"
+        }
+      },
+      "successCount": 1,
+      "failureCount": 0,
+      "reliability": 1
+    },
+    {
+      "patternType": "entity-structure",
+      "entityType": "Table",
+      "patternKey": "entity-table",
+      "patternValue": {
+        "recommended": [
+          "id",
+          "number",
+          "capacity",
+          "status",
+          "section",
+          "orderCount",
+          "reservationCount",
+          "name",
+          "description",
+          "createdAt"
+        ],
+        "fieldTypes": {
+          "id": "serial (auto-increment)",
+          "number": "integer",
+          "capacity": "integer",
+          "status": "enum(available,occupied,reserved,cleaning)",
+          "section": "text",
+          "orderCount": "text",
+          "reservationCount": "text",
+          "name": "string",
+          "description": "string",
+          "createdAt": "datetime"
+        }
+      },
+      "successCount": 1,
+      "failureCount": 0,
+      "reliability": 1
+    },
+    {
+      "patternType": "workflow-design",
+      "patternKey": "workflow-order",
+      "patternValue": {
+        "states": [
+          "received",
+          "preparing",
+          "ready",
+          "served",
+          "completed",
+          "cancelled"
+        ],
+        "commonTransitions": [
+          {
+            "from": "received",
+            "to": "preparing",
+            "action": "Start Preparing",
+            "role": "kitchen"
+          },
+          {
+            "from": "preparing",
+            "to": "ready",
+            "action": "Mark Ready",
+            "role": "kitchen"
+          },
+          {
+            "from": "ready",
+            "to": "served",
+            "action": "Serve",
+            "role": "server"
+          },
+          {
+            "from": "served",
+            "to": "completed",
+            "action": "Complete",
+            "role": "server"
+          },
+          {
+            "from": "received",
+            "to": "cancelled",
+            "action": "Cancel",
+            "role": "manager"
+          }
+        ]
+      },
+      "successCount": 1,
+      "failureCount": 0,
+      "reliability": 1
     }
   ],
   "preferences": [
@@ -853,12 +1164,12 @@
       "key": "quality-score-general",
       "value": "76",
       "category": "architecture",
-      "frequency": 9
+      "frequency": 11
     }
   ],
   "stats": {
-    "totalPatterns": 32,
-    "reliablePatterns": 32,
+    "totalPatterns": 39,
+    "reliablePatterns": 39,
     "totalPreferences": 1
   }
 }

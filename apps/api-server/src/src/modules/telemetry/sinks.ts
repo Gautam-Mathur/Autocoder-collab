@@ -24,7 +24,9 @@ export type TelemetryEventKind =
   | 'plugin.error'
   | 'dryrun.snapshot'
   | 'pipeline.summary'
-  | 'mcp.tool.call';
+  | 'mcp.tool.call'
+  | 'drift.event'
+  | 'agent.decision';
 
 export interface TelemetryEvent {
   kind: TelemetryEventKind;
@@ -229,6 +231,34 @@ export function emitSLMHealth(record: SLMHealthRecord, conversationId?: number |
       attempted: record.attempted,
       fallbackUsed: record.fallbackUsed,
       reasons: record.reasons,
+    },
+  });
+}
+
+export function emitDriftEvent(agent: string, field: string, value: unknown, rationale?: string, conversationId?: number | string): void {
+  emit({
+    kind: 'drift.event',
+    timestamp: Date.now(),
+    conversationId,
+    payload: {
+      agent,
+      field,
+      value,
+      rationale,
+    },
+  });
+}
+
+export function emitDecision(agent: string, field: string, value: unknown, rationale?: string, conversationId?: number | string): void {
+  emit({
+    kind: 'agent.decision',
+    timestamp: Date.now(),
+    conversationId,
+    payload: {
+      agent,
+      field,
+      value,
+      rationale,
     },
   });
 }

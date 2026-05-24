@@ -15,6 +15,7 @@
     "@types/multer": "^2.1.0",
     "@types/ws": "^8.18.1",
     "@workspace/api-zod": "workspace:*",
+    "@workspace/core": "workspace:*",
     "@workspace/db": "workspace:*",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",

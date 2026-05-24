@@ -5,5 +5,9 @@
   "exports": {
     "./ExecutiveMemory": "./src/ExecutiveMemory.ts",
     "./StageLedger": "./src/StageLedger.ts"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "~5.9.2"
   }
 }

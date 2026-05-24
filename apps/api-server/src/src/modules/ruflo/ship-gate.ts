@@ -129,7 +129,8 @@ async function repairTargeted(
 
   for (const file of failedFiles) {
     const original = out[file] ?? '';
-    const layered = await repairCascade(file, original);
+    const errReason = errors.find((e) => e.file === file)?.reason ?? 'Validation error';
+    const layered = await repairCascade(file, original, errReason);
     if (layered.content !== original) {
       out[file] = layered.content;
       repairsApplied++;
@@ -146,18 +147,22 @@ interface CascadeResult {
   layer: 1 | 2 | 3;
 }
 
-async function repairCascade(file: string, content: string): Promise<CascadeResult> {
+async function repairCascade(file: string, content: string, errorMsg: string): Promise<CascadeResult> {
   // Layer 1 — deterministic syntax sweep
   const l1 = layer1Fix(file, content);
   if (l1 !== content) return { content: l1, layer: 1 };
 
-  // Layer 2 — bounded conservative repair. We attempt to wrap the file body
-  // in safe scaffolding when the file is non-empty but failed validation.
-  // For .tsx/.ts this means appending a default export or `export {}` so the
-  // file at least parses. This is the "workhorse" tier that keeps imports
-  // resolving without needing the SLM.
-  const l2 = layer2BoundedRepair(file, content);
-  if (l2 !== content) return { content: l2, layer: 2 };
+  // Layer 2 — SLM Repair
+  try {
+    const { repairFileWithSlm } = await import('./slm-repair.js');
+    const l2 = await repairFileWithSlm(file, content, errorMsg);
+    if (l2 && l2 !== content) {
+      return { content: l2, layer: 2 };
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[RuFlo:ShipGate] SLM repair failed for ${file}, falling through to template-basement:`, (err as Error).message);
+  }
 
   // Layer 3 — template basement (always boots)
   return { content: layer3Template(file), layer: 3 };

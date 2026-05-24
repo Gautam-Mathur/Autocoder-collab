@@ -26,25 +26,26 @@ export const DEPENDENCIES: Readonly<Record<AgentName, readonly AgentName[]>> = O
   Tester:    Object.freeze<AgentName[]>([]),
 }) as Readonly<Record<AgentName, readonly AgentName[]>>;
 
-export function propagateInvalidation(changed: AgentName, mem: ExecutiveMemory): void {
-  const downstream = DEPENDENCIES[changed] ?? [];
-  for (const a of downstream) mem.invalidated.add(a);
-
-  logEvent({
-    type: 'invalidation_propagated',
-    source: changed,
-    affected: [...downstream],
-    total: mem.invalidated.size,
-  });
-}
+export { propagateInvalidation } from './invalidation-engine.js';
 
 /**
  * shouldRun gate.
  *
  * First run (empty invalidated set) → run everyone.
  * Subsequent runs → only run agents that are in the dirty set.
+ * If only frontend components are invalidated, we skip stable backend stages.
  */
 export function shouldRun(agent: AgentName, mem: ExecutiveMemory): boolean {
   if (mem.invalidated.size === 0) return true;
+
+  const BACKEND_STAGES: AgentName[] = ['Queen', 'Planner', 'Architect', 'System'];
+  const hasBackendInvalidated = [...mem.invalidated].some(a => BACKEND_STAGES.includes(a));
+
+  if (BACKEND_STAGES.includes(agent)) {
+    if (!hasBackendInvalidated) {
+      return false; // Skip stable backend stages
+    }
+  }
+
   return mem.invalidated.has(agent);
 }

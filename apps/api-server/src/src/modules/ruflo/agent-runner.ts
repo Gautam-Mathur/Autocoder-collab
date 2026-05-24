@@ -99,25 +99,45 @@ export async function runAgent(
   mem: ExecutiveMemory,
   runCtx: AgentRunContext,
 ): Promise<void> {
-  const limitMs = TIMEOUTS[agent];
+  const limitMs = 10000;
+  const warningMs = 3000;
   logEvent({ type: 'agent_start', agent, timestamp: Date.now() });
   const startMs = Date.now();
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  await checkHealth(agent);
+
+  let warningTimer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const warningPromise = new Promise<void>((resolve) => {
+    warningTimer = setTimeout(() => {
+      logEvent({ type: 'slm_unavailable', agent, fallback: 'rules-only' });
+      // eslint-disable-next-line no-console
+      console.warn(`[RuFlo:${agent}] Warning: agent execution exceeded 3000ms, checking health...`);
+      resolve();
+    }, warningMs);
+  });
+
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new HaltEvent(agent, limitMs)), limitMs);
+    timeoutTimer = setTimeout(() => reject(new HaltEvent(agent, limitMs)), limitMs);
   });
 
   try {
     const result = await Promise.race([
-      executeAgentLogic(agent, ledger, mem, runCtx),
+      (async () => {
+        const res = await executeAgentLogic(agent, ledger, mem, runCtx);
+        if (warningTimer) clearTimeout(warningTimer);
+        return res;
+      })(),
       timeoutPromise,
     ]);
+    // Allow the warningPromise to settle or be ignored since warningTimer is cleared
     validateOutputShape(agent, result);
-    ledger.write(agent, OWNED_FIELD[agent], result);
+    ledger.write(agent, OWNED_FIELD[agent] as any, result);
     logEvent({ type: 'agent_complete', agent, durationMs: Date.now() - startMs });
   } finally {
-    if (timer) clearTimeout(timer);
+    if (warningTimer) clearTimeout(warningTimer);
+    if (timeoutTimer) clearTimeout(timeoutTimer);
   }
 }
 

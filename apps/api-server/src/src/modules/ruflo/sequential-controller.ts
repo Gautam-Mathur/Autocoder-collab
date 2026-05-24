@@ -16,14 +16,17 @@ import { propagateInvalidation, shouldRun } from './dependency-graph.js';
 import { ExecutiveMemory } from './executive-memory.js';
 import { drainEvents, logEvent } from './observability-sink.js';
 import { shipGate } from './ship-gate.js';
-import { StageLedger } from './stage-ledger.js';
+import { StageLedger, DriftEvent, OWNERSHIP } from './stage-ledger.js';
+import type { AgentStage } from '@workspace/core/ExecutiveMemory';
 import {
   HaltEvent,
   SkipEvent,
   checkHealth,
   runAgent,
+  OWNED_FIELD,
   type AgentRunContext,
 } from './agent-runner.js';
+import { emitDecision, emitDriftEvent } from '../telemetry/sinks.js';
 import type { AgentName, DeliveryReport } from './types.js';
 
 // Security runs AFTER Coder + Debugger so it can scan emitted source files.
@@ -37,7 +40,6 @@ const AGENT_ORDER: AgentName[] = [
   'Designer',
   'Coder',
   'Debugger',
-  'Security',
   'Reviewer',
   'Tester',
 ];
@@ -247,6 +249,12 @@ export async function runRuFloPipeline(opts: RuFloRunOptions): Promise<DeliveryR
       const t0 = Date.now();
       opts.onAgentEvent?.(agent, 'start');
       await runAgent(agent, ledger, mem, runCtx);
+      // Pipe decision to LangSmith/OTel
+      const owned = OWNED_FIELD[agent as any];
+      const newDecision = mem.decisions.find(d => d.agent === agent && d.field === owned);
+      if (newDecision) {
+        emitDecision(newDecision.agent, newDecision.field, newDecision.value, newDecision.rationale, opts.legacyCtx?.conversationId);
+      }
       timings[agent] = Date.now() - t0;
       opts.onAgentEvent?.(agent, 'complete', summarizeAgent(agent, mem));
 
@@ -290,6 +298,30 @@ export async function runRuFloPipeline(opts: RuFloRunOptions): Promise<DeliveryR
       if (err instanceof HaltEvent) {
         logEvent({ type: 'halt_event', agent, reason: 'timeout', limitMs: err.limitMs });
         opts.onAgentEvent?.(agent, 'halt');
+      } else if (err instanceof DriftEvent) {
+        logEvent({ type: 'drift_event', agent: agent as any, field: err.field });
+        opts.onAgentEvent?.(agent, 'halt');
+        emitDriftEvent(agent, err.field, err.value, err.rationale, opts.legacyCtx?.conversationId);
+        const owner = Object.entries(OWNERSHIP).find(([, fields]) => fields.includes(err.field))?.[0] as AgentStage | undefined;
+        if (owner && owner !== agent) {
+          mem.amendmentRequests.push({
+            requestor: agent as AgentStage,
+            field: err.field,
+            value: err.value,
+            rationale: err.rationale,
+            timestamp: Date.now(),
+            status: 'pending'
+          });
+          const ownerIndex = AGENT_ORDER.indexOf(owner as any);
+          const currentIndex = AGENT_ORDER.indexOf(agent);
+          if (ownerIndex !== -1 && ownerIndex < currentIndex) {
+            for (let j = ownerIndex; j < currentIndex; j++) {
+              mem.invalidated.add(AGENT_ORDER[j] as AgentStage);
+            }
+            i = ownerIndex - 1;
+            continue;
+          }
+        }
       } else if (err instanceof SkipEvent) {
         logEvent({ type: 'skip_event', agent, reason: err.reason });
         opts.onAgentEvent?.(agent, 'skipped');

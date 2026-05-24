@@ -15,7 +15,12 @@ export const OWNERSHIP: Readonly<Record<AgentStage, readonly string[]>> = Object
 
 export class DriftEvent extends Error {
   override name = 'DriftEvent';
-  constructor(public agent: AgentStage, public field: string) {
+  constructor(
+    public agent: AgentStage,
+    public field: string,
+    public value: unknown,
+    public rationale?: string
+  ) {
     super(
       `DriftEvent: Agent "${agent}" attempted to write field "${field}" — not in OWNERSHIP map. Generation halted.`,
     );
@@ -37,7 +42,7 @@ export class StageLedger {
   write(agent: AgentStage, field: string, value: unknown, rationale?: string): void {
     const allowed = OWNERSHIP[agent];
     if (!allowed?.includes(field)) {
-      throw new DriftEvent(agent, field);
+      throw new DriftEvent(agent, field, value, rationale);
     }
     const ts = Date.now();
     this.log.push({ agent, field, op: 'write', timestamp: ts });

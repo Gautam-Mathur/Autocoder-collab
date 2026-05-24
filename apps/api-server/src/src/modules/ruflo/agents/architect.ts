@@ -20,7 +20,7 @@ import type {
 } from '../types.js';
 
 export async function runArchitect(
-  _mem: ExecutiveMemory,
+  mem: ExecutiveMemory,
   ledger: StageLedger,
   runCtx: AgentRunContext,
 ): Promise<ArchitectOutput> {
@@ -28,6 +28,49 @@ export async function runArchitect(
   const spec = ledger.read('Architect', 'taskSpec') as TaskSpec | null;
   if (!planner) throw new Error('Architect: no planner output in memory');
 
+  const baseOutput = await generateBaseArchitectOutput(planner, spec, runCtx);
+
+  // Check for any pending amendment request for 'architect'
+  const pendingRequest = mem.amendmentRequests.find(
+    (r) => r.field === 'architect' && r.status === 'pending'
+  );
+  if (pendingRequest) {
+    pendingRequest.status = 'approved';
+    const requestedVal = pendingRequest.value as ArchitectOutput;
+    
+    // Merge fileGraphs
+    const mergedGraph = [...(requestedVal.fileGraph || [])];
+    for (const node of baseOutput.fileGraph) {
+      if (!mergedGraph.some((n) => n.file === node.file)) {
+        mergedGraph.push(node);
+      }
+    }
+    
+    // Merge modules
+    const mergedModules = [...(requestedVal.architecture?.modules || [])];
+    for (const mod of baseOutput.architecture.modules || []) {
+      if (!mergedModules.some((m) => m.name === mod.name)) {
+        mergedModules.push(mod);
+      }
+    }
+    
+    return {
+      architecture: {
+        modules: mergedModules,
+        techStack: requestedVal.architecture?.techStack || baseOutput.architecture.techStack,
+      },
+      fileGraph: mergedGraph,
+    };
+  }
+
+  return baseOutput;
+}
+
+async function generateBaseArchitectOutput(
+  planner: PlannerOutput,
+  spec: TaskSpec | null,
+  runCtx: AgentRunContext,
+): Promise<ArchitectOutput> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ctx = runCtx.legacyCtx as any | undefined;
   let realArch: { modules?: Array<{ name: string; type?: string; responsibility?: string }>; techStack?: string[] } | null = null;
