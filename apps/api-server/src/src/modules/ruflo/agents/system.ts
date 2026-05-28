@@ -1,127 +1,186 @@
 /**
- * SYSTEM — Backend logic owner (Fusion mode).
- * Wraps AutoCoder's `schema-designer.designSchema` and `api-designer.designAPI`.
- * Writes results back to legacyCtx.schemaDesign / legacyCtx.apiDesign so the
- * downstream codegen pipeline (Coder) can consume them.
+ * SYSTEM — Backend logic owner
+ * Designing data models, API routes, and database schemas.
  *
- * Reads:  legacyCtx.plan, legacyCtx.reasoning, legacyCtx.detectedDomain
+ * Reads:  mem.taskSpec, mem.planner
  * Writes: SystemOutput { logic, apiRoutes, schema }
  */
 
 import { ExecutiveMemory } from '../executive-memory.js';
 import { StageLedger } from '../stage-ledger.js';
+import { runSLM, registerStageTemplate } from '../../slm-inference-engine.js';
 import type { AgentRunContext } from '../agent-runner.js';
 import type {
   ApiRoute,
-  ArchitectOutput,
   DataModel,
   PlannerOutput,
   SchemaSpec,
   SystemOutput,
+  TaskSpec,
 } from '../types.js';
+
+registerStageTemplate({
+  stage: 'System',
+  systemPrompt: `You are the System agent in a multi-agent system.
+Your job is to read the Queen's task specification and the Planner's output, then design the backend logical models, API routes, and database schema.
+Specifically, you must generate a JSON object with:
+1. logic:
+   - dataModels: List of data models. Each has:
+     - name: Name of the model
+     - fields: Array of field descriptors containing name, type, and required flag
+   - rules: Array of functional business rules. Each has:
+     - name: ID or short name
+     - description: details of the rule
+2. apiRoutes: List of API endpoints. Each has:
+   - method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+   - path: endpoint path (e.g. "/api/items", "/api/items/:id")
+   - handler: name of handler function (e.g. "getItems")
+   - consumes: name of consumed data model (optional)
+   - produces: name of produced data model (optional)
+3. schema:
+   - tables: List of DB tables. Each has name and columns (name and type).
+
+Focus on this instruction: "{agentTask}"`,
+  userPromptBuilder: (context: Record<string, any>) => `Queen's Task Specification:\n${JSON.stringify(context.taskSpec, null, 2)}\n\nPlanner's Output:\n${JSON.stringify(context.planner, null, 2)}`,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      logic: {
+        type: 'object',
+        properties: {
+          dataModels: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                fields: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      type: { type: 'string' },
+                      required: { type: 'boolean' }
+                    },
+                    required: ['name', 'type']
+                  }
+                }
+              },
+              required: ['name', 'fields']
+            }
+          },
+          rules: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                description: { type: 'string' }
+              },
+              required: ['name', 'description']
+            }
+          }
+        },
+        required: ['dataModels', 'rules']
+      },
+      apiRoutes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+            path: { type: 'string' },
+            handler: { type: 'string' },
+            consumes: { type: 'string' },
+            produces: { type: 'string' }
+          },
+          required: ['method', 'path', 'handler']
+        }
+      },
+      schema: {
+        type: 'object',
+        properties: {
+          tables: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                columns: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      name: { type: 'string' },
+                      type: { type: 'string' }
+                    },
+                    required: ['name', 'type']
+                  }
+                }
+              },
+              required: ['name', 'columns']
+            }
+          }
+        },
+        required: ['tables']
+      }
+    },
+    required: ['logic', 'apiRoutes', 'schema']
+  },
+  maxTokens: 1536,
+  temperature: 0.2
+});
 
 export async function runSystem(
   _mem: ExecutiveMemory,
   ledger: StageLedger,
   runCtx: AgentRunContext,
 ): Promise<SystemOutput> {
-  const architect = ledger.read('System', 'architect') as ArchitectOutput | null;
   const planner = ledger.read('System', 'planner') as PlannerOutput | null;
-  if (!architect || !planner) throw new Error('System: missing architect/planner output');
+  const spec = ledger.read('System', 'taskSpec') as TaskSpec | null;
+  if (!planner || !spec) throw new Error('System: missing planner or taskSpec output');
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = runCtx.legacyCtx as any | undefined;
+  const agentTask = spec.agentTasks?.System || 'Define logical models and API endpoints.';
 
-  let realSchema: { tables?: Array<{ name: string; columns?: Array<{ name: string; type: string }> }> } | null = null;
-  let realApi: { routes?: Array<{ method: string; path: string; handler?: string; consumes?: string; produces?: string }> } | null = null;
-
-  if (ctx?.plan) {
-    try {
-      const sd = await import('../../schema-designer.js');
-      const schemaDesign = sd.designSchema(ctx.plan, ctx.reasoning ?? null, ctx.detectedDomain);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      realSchema = schemaDesign as any;
-      ctx.schemaDesign = schemaDesign;
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:System] designSchema failed:', (e as Error).message);
-    }
-    try {
-      const ad = await import('../../api-designer.js');
-      const apiDesign = ad.designAPI(ctx.plan, ctx.reasoning ?? null, ctx.schemaDesign ?? null, ctx.detectedDomain);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      realApi = apiDesign as any;
-      ctx.apiDesign = apiDesign;
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:System] designAPI failed:', (e as Error).message);
-    }
+  const slmResult = await runSLM<SystemOutput>('System', { taskSpec: spec, planner, agentTask });
+  if (slmResult.success && slmResult.data) {
+    return slmResult.data;
   }
 
-  // Build data models — prefer plan.dataModel, fallback to architect modules.
+  // Standalone rule-based fallback.
   const dataModels: DataModel[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const planModels = (ctx?.plan?.dataModel ?? []) as Array<any>;
-  if (planModels.length > 0) {
-    for (const e of planModels) {
-      dataModels.push({
-        name: String(e.name),
-        fields: (e.fields ?? []).map((f: { name: string; type: string; required?: boolean }) => ({
-          name: f.name, type: f.type, required: !!f.required,
-        })),
-      });
-    }
-  } else {
-    const entities = new Set<string>();
-    for (const m of architect.architecture.modules) {
-      const stripped = m.name.replace(/(Page|Panel|Dashboard|View|List|Form|Api|Manage)$/i, '');
-      if (stripped.length > 1) entities.add(singularize(stripped));
-    }
-    if (entities.size === 0) entities.add('Item');
-    for (const name of entities) {
-      dataModels.push({ name, fields: [
-        { name: 'id', type: 'string', required: true },
-        { name: 'createdAt', type: 'datetime', required: true },
-        { name: 'name', type: 'string', required: true },
-      ]});
-    }
+  const entities = new Set<string>();
+
+  for (const f of planner.features) {
+    const stripped = f.name.replace(/(Page|Panel|Dashboard|View|List|Form|Api|Manage)$/i, '');
+    if (stripped.length > 1) entities.add(singularize(stripped));
+  }
+  if (entities.size === 0) entities.add('Item');
+  for (const name of entities) {
+    dataModels.push({ name, fields: [
+      { name: 'id', type: 'string', required: true },
+      { name: 'createdAt', type: 'datetime', required: true },
+      { name: 'name', type: 'string', required: true },
+    ]});
   }
 
-  // Build API routes — prefer real api design, fallback to CRUD per entity.
   const apiRoutes: ApiRoute[] = [];
-  if (realApi?.routes?.length) {
-    for (const r of realApi.routes) {
-      apiRoutes.push({
-        method: (r.method as ApiRoute['method']) ?? 'GET',
-        path: r.path,
-        handler: r.handler ?? `${r.method.toLowerCase()}${r.path.replace(/\W+/g, '')}`,
-        consumes: r.consumes,
-        produces: r.produces,
-      });
-    }
-  } else {
-    for (const m of dataModels) {
-      const lower = m.name.toLowerCase();
-      apiRoutes.push(
-        { method: 'GET',    path: `/api/${lower}s`,     handler: `list${m.name}s`,  produces: m.name },
-        { method: 'POST',   path: `/api/${lower}s`,     handler: `create${m.name}`, consumes: m.name, produces: m.name },
-        { method: 'GET',    path: `/api/${lower}s/:id`, handler: `get${m.name}`,    produces: m.name },
-        { method: 'PUT',    path: `/api/${lower}s/:id`, handler: `update${m.name}`, consumes: m.name, produces: m.name },
-        { method: 'DELETE', path: `/api/${lower}s/:id`, handler: `delete${m.name}` },
-      );
-    }
+  for (const m of dataModels) {
+    const lower = m.name.toLowerCase();
+    apiRoutes.push(
+      { method: 'GET',    path: `/api/${lower}s`,     handler: `list${m.name}s`,  produces: m.name },
+      { method: 'POST',   path: `/api/${lower}s`,     handler: `create${m.name}`, consumes: m.name, produces: m.name },
+      { method: 'GET',    path: `/api/${lower}s/:id`, handler: `get${m.name}`,    produces: m.name },
+      { method: 'PUT',    path: `/api/${lower}s/:id`, handler: `update${m.name}`, consumes: m.name, produces: m.name },
+      { method: 'DELETE', path: `/api/${lower}s/:id`, handler: `delete${m.name}` },
+    );
   }
 
-  // Build SchemaSpec.
-  const schema: SchemaSpec = realSchema?.tables?.length
-    ? { tables: realSchema.tables.map((t) => ({
-        name: t.name,
-        columns: (t.columns ?? []).map((c) => ({ name: c.name, type: c.type })),
-      }))}
-    : { tables: dataModels.map((m) => ({
-        name: m.name.toLowerCase() + 's',
-        columns: m.fields.map((f) => ({ name: f.name, type: f.type })),
-      }))};
+  const schema: SchemaSpec = { tables: dataModels.map((m) => ({
+    name: m.name.toLowerCase() + 's',
+    columns: m.fields.map((f) => ({ name: f.name, type: f.type })),
+  }))};
 
   return {
     logic: {

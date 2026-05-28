@@ -1,15 +1,14 @@
 /**
- * ARCHITECT — Blueprint owner (Fusion mode).
- * Wraps AutoCoder's `architecture-planner.planArchitecture` and writes the
- * result to both RuFlo memory and `legacyCtx.architecture` so downstream
- * stages (Coder → generateProjectFromPlan) can consume it.
+ * ARCHITECT — Blueprint owner
+ * Defining architecture modules and the file dependency graph.
  *
- * Reads:  legacyCtx.plan, legacyCtx.reasoning, legacyCtx.detectedDomain
+ * Reads:  mem.taskSpec, mem.planner
  * Writes: ArchitectOutput { architecture, fileGraph }
  */
 
 import { ExecutiveMemory } from '../executive-memory.js';
 import { StageLedger } from '../stage-ledger.js';
+import { runSLM, registerStageTemplate } from '../../slm-inference-engine.js';
 import type { AgentRunContext } from '../agent-runner.js';
 import type {
   ArchitectOutput,
@@ -19,8 +18,69 @@ import type {
   TaskSpec,
 } from '../types.js';
 
+registerStageTemplate({
+  stage: 'Architect',
+  systemPrompt: `You are the Architect agent in a multi-agent system.
+Your job is to read the Queen's task specification and the Planner's feature/requirement list, then generate a system architecture and a file dependency graph.
+Specifically, you must generate a JSON object with:
+1. architecture:
+   - modules: List of modules. Each module has:
+     - name: pascal-cased name of the module
+     - type: "page" | "component" | "api" | "lib" | "service"
+     - responsibility: string describing what the module does
+   - techStack: Array of tech stack names (e.g. ["react", "typescript", "vite", "tailwind"])
+2. fileGraph: Array of file nodes. Each node has:
+   - file: path of the file (e.g. "src/main.tsx", "src/App.tsx", "src/components/MyComponent.tsx")
+   - exports: array of exported entities
+   - imports: array of relative paths representing imported files
+
+IMPORTANT CONTRACT REQUIREMENT: Every feature name in the Planner's feature list MUST have a corresponding module in the architecture.modules list. Do not leave any features out.
+
+Focus on this instruction: "{agentTask}"`,
+  userPromptBuilder: (context: Record<string, any>) => `Queen's Task Specification:\n${JSON.stringify(context.taskSpec, null, 2)}\n\nPlanner's Output:\n${JSON.stringify(context.planner, null, 2)}`,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      architecture: {
+        type: 'object',
+        properties: {
+          modules: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                type: { type: 'string', enum: ['page', 'component', 'api', 'lib', 'service'] },
+                responsibility: { type: 'string' }
+              },
+              required: ['name', 'type', 'responsibility']
+            }
+          },
+          techStack: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['modules', 'techStack']
+      },
+      fileGraph: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            file: { type: 'string' },
+            exports: { type: 'array', items: { type: 'string' } },
+            imports: { type: 'array', items: { type: 'string' } }
+          },
+          required: ['file', 'exports', 'imports']
+        }
+      }
+    },
+    required: ['architecture', 'fileGraph']
+  },
+  maxTokens: 1536,
+  temperature: 0.2
+});
+
 export async function runArchitect(
-  mem: ExecutiveMemory,
+  _mem: ExecutiveMemory,
   ledger: StageLedger,
   runCtx: AgentRunContext,
 ): Promise<ArchitectOutput> {
@@ -28,78 +88,19 @@ export async function runArchitect(
   const spec = ledger.read('Architect', 'taskSpec') as TaskSpec | null;
   if (!planner) throw new Error('Architect: no planner output in memory');
 
-  const baseOutput = await generateBaseArchitectOutput(planner, spec, runCtx);
+  const agentTask = spec?.agentTasks?.Architect || 'Plan modules and file dependencies.';
 
-  // Check for any pending amendment request for 'architect'
-  const pendingRequest = mem.amendmentRequests.find(
-    (r) => r.field === 'architect' && r.status === 'pending'
-  );
-  if (pendingRequest) {
-    pendingRequest.status = 'approved';
-    const requestedVal = pendingRequest.value as ArchitectOutput;
-    
-    // Merge fileGraphs
-    const mergedGraph = [...(requestedVal.fileGraph || [])];
-    for (const node of baseOutput.fileGraph) {
-      if (!mergedGraph.some((n) => n.file === node.file)) {
-        mergedGraph.push(node);
-      }
-    }
-    
-    // Merge modules
-    const mergedModules = [...(requestedVal.architecture?.modules || [])];
-    for (const mod of baseOutput.architecture.modules || []) {
-      if (!mergedModules.some((m) => m.name === mod.name)) {
-        mergedModules.push(mod);
-      }
-    }
-    
-    return {
-      architecture: {
-        modules: mergedModules,
-        techStack: requestedVal.architecture?.techStack || baseOutput.architecture.techStack,
-      },
-      fileGraph: mergedGraph,
-    };
+  const slmResult = await runSLM<ArchitectOutput>('Architect', { taskSpec: spec, planner, agentTask });
+  if (slmResult.success && slmResult.data) {
+    return slmResult.data;
   }
 
-  return baseOutput;
-}
-
-async function generateBaseArchitectOutput(
-  planner: PlannerOutput,
-  spec: TaskSpec | null,
-  runCtx: AgentRunContext,
-): Promise<ArchitectOutput> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = runCtx.legacyCtx as any | undefined;
-  let realArch: { modules?: Array<{ name: string; type?: string; responsibility?: string }>; techStack?: string[] } | null = null;
-
-  if (ctx?.plan) {
-    try {
-      const mod = await import('../../architecture-planner.js');
-      const arch = mod.planArchitecture(ctx.plan, ctx.reasoning ?? null, ctx.detectedDomain ?? spec?.domain);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      realArch = arch as any;
-      ctx.architecture = arch;
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Architect] planArchitecture failed, using fallback:', (e as Error).message);
-    }
-  }
-
-  // Synthesize modules: prefer the real architecture, otherwise project from planner features.
-  const modules: ArchitectureModule[] = realArch?.modules?.length
-    ? realArch.modules.map((m) => ({
-        name: pascalCase(m.name),
-        type: classify(m.type ?? m.name),
-        responsibility: m.responsibility ?? m.name,
-      }))
-    : planner.features.map((f) => ({
-        name: pascalCase(f.name),
-        type: classify(f.name),
-        responsibility: f.acceptanceCriteria[0] ?? f.name,
-      }));
+  // Standalone rule-based fallback.
+  const modules: ArchitectureModule[] = planner.features.map((f) => ({
+    name: pascalCase(f.name),
+    type: classify(f.name),
+    responsibility: f.acceptanceCriteria[0] ?? f.name,
+  }));
 
   // Guarantee Contract 1 — every planner feature has a module.
   for (const f of planner.features) {
@@ -121,7 +122,7 @@ async function generateBaseArchitectOutput(
   }
 
   return {
-    architecture: { modules, techStack: realArch?.techStack ?? ['react', 'typescript', 'vite', 'tailwind'] },
+    architecture: { modules, techStack: ['react', 'typescript', 'vite', 'tailwind'] },
     fileGraph,
   };
 }

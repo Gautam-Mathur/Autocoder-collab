@@ -1,91 +1,96 @@
 /**
- * DESIGNER — UI component owner (Fusion mode).
- * Wraps AutoCoder's `design-system-engine.generateDesignSystem`,
- * `functionality-engine.generateFunctionalitySpec`, and
- * `component-composer.composeComponents`. Writes designSystem,
- * functionalitySpec, and componentTree back to legacyCtx so the Coder
- * (generateProjectFromPlan) can consume them.
+ * DESIGNER — UI component owner
+ * Designing components and style tokens.
  *
- * Reads:  legacyCtx.plan, legacyCtx.reasoning, legacyCtx.detectedDomain
+ * Reads:  mem.taskSpec, mem.planner, mem.system (optional)
  * Writes: DesignerOutput { components, styleTokens }
  */
 
 import { ExecutiveMemory } from '../executive-memory.js';
 import { StageLedger } from '../stage-ledger.js';
+import { runSLM, registerStageTemplate } from '../../slm-inference-engine.js';
 import type { AgentRunContext } from '../agent-runner.js';
 import type {
-  ArchitectOutput,
   ComponentSpec,
   DesignerOutput,
   StyleTokens,
   SystemOutput,
+  PlannerOutput,
+  TaskSpec,
 } from '../types.js';
+
+registerStageTemplate({
+  stage: 'Designer',
+  systemPrompt: `You are the Designer agent in a multi-agent system.
+Your job is to read the Queen's task specification, the Planner's features, and optional System data models, and then design the UI components and style tokens (colors, spacing, typography).
+Specifically, you must generate a JSON object with:
+1. components: List of UI components. Each has:
+   - name: Pascal-case name of the component (e.g. "Navbar", "UserList", "CreateProjectForm")
+   - props: Array of prop names as strings (e.g. ["className", "onSelect", "items"])
+   - consumes: Name of the data model this component consumes/displays (optional)
+2. styleTokens:
+   - colors: Record mapping key names (e.g. primary, secondary, background, foreground, muted) to hex colors
+   - spacing: Record mapping sizes (e.g. xs, sm, md, lg, xl) to size values (e.g. "8px", "16px")
+   - typography: Record mapping typographic styles (e.g. sans, mono) to font stacks
+
+IMPORTANT CONTRACT REQUIREMENT: If System data models are provided in the input, ensure that EVERY data model name has at least one UI component in the components list that consumes it (declaring it in the consumes property).
+
+Focus on this instruction: "{agentTask}"`,
+  userPromptBuilder: (context: Record<string, any>) => `Queen's Task Specification:\n${JSON.stringify(context.taskSpec, null, 2)}\n\nPlanner's Output:\n${JSON.stringify(context.planner, null, 2)}\n\nSystem Output (if available):\n${context.system ? JSON.stringify(context.system, null, 2) : 'Not available yet'}`,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      components: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            props: { type: 'array', items: { type: 'string' } },
+            consumes: { type: 'string' }
+          },
+          required: ['name', 'props']
+        }
+      },
+      styleTokens: {
+        type: 'object',
+        properties: {
+          colors: { type: 'object', additionalProperties: { type: 'string' } },
+          spacing: { type: 'object', additionalProperties: { type: 'string' } },
+          typography: { type: 'object', additionalProperties: { type: 'string' } }
+        },
+        required: ['colors', 'spacing', 'typography']
+      }
+    },
+    required: ['components', 'styleTokens']
+  },
+  maxTokens: 1536,
+  temperature: 0.2
+});
 
 export async function runDesigner(
   _mem: ExecutiveMemory,
   ledger: StageLedger,
   runCtx: AgentRunContext,
 ): Promise<DesignerOutput> {
-  const architect = ledger.read('Designer', 'architect') as ArchitectOutput | null;
+  const planner = ledger.read('Designer', 'planner') as PlannerOutput | null;
+  const spec = ledger.read('Designer', 'taskSpec') as TaskSpec | null;
+  if (!planner || !spec) throw new Error('Designer: missing planner or taskSpec output');
+
   const system = ledger.read('Designer', 'system') as SystemOutput | null;
-  if (!architect) throw new Error('Designer: missing architect output');
+  const agentTask = spec.agentTasks?.Designer || 'Establish design tokens and UI components.';
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = runCtx.legacyCtx as any | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let componentTree: any | null = null;
-
-  if (ctx?.plan) {
-    try {
-      const ds = await import('../../design-system-engine.js');
-      const designSystem = ds.generateDesignSystem(ctx.plan, ctx.reasoning ?? undefined);
-      ctx.designSystem = designSystem;
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Designer] generateDesignSystem failed:', (e as Error).message);
-    }
-    try {
-      const fe = await import('../../functionality-engine.js');
-      if (ctx.reasoning) {
-        const funcSpec = fe.generateFunctionalitySpec(ctx.plan, ctx.reasoning);
-        ctx.functionalitySpec = funcSpec;
-      }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Designer] generateFunctionalitySpec failed:', (e as Error).message);
-    }
-    try {
-      const cc = await import('../../component-composer.js');
-      componentTree = cc.composeComponents(
-        ctx.plan,
-        ctx.reasoning ?? null,
-        ctx.functionalitySpec ?? null,
-        ctx.designSystem ?? null,
-        ctx.detectedDomain,
-      );
-      ctx.componentTree = componentTree;
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Designer] composeComponents failed:', (e as Error).message);
-    }
+  const slmResult = await runSLM<DesignerOutput>('Designer', { taskSpec: spec, planner, system, agentTask });
+  if (slmResult.success && slmResult.data) {
+    return slmResult.data;
   }
 
-  const components: ComponentSpec[] = [];
-
-  // Project from real componentTree if available.
-  if (componentTree?.components && Array.isArray(componentTree.components)) {
-    for (const c of componentTree.components) {
-      components.push({
-        name: String(c.name ?? c.id ?? 'Component'),
-        props: Array.isArray(c.props) ? c.props.map((p: { name?: string } | string) => typeof p === 'string' ? p : (p.name ?? 'prop')) : ['className'],
-        consumes: typeof c.consumes === 'string' ? c.consumes : matchEntity(String(c.name ?? ''), system),
-      });
-    }
-  } else {
-    for (const m of architect.architecture.modules) {
-      components.push({ name: m.name, props: ['className'], consumes: matchEntity(m.name, system) });
-    }
-  }
+  // Standalone rule-based fallback.
+  const components: ComponentSpec[] = planner.features.map((f) => ({
+    name: pascalCase(f.name),
+    props: ['className'],
+    consumes: matchEntity(f.name, system),
+  }));
 
   // Guarantee Contract 2 — every data model has a UI consumer.
   if (system) {
@@ -97,19 +102,21 @@ export async function runDesigner(
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dsTokens = (ctx?.designSystem as any)?.tokens ?? {};
   const styleTokens: StyleTokens = {
-    colors: dsTokens.colors ?? {
+    colors: {
       primary: '#3b82f6', secondary: '#8b5cf6', background: '#ffffff', foreground: '#0f172a', muted: '#f1f5f9',
     },
-    spacing: dsTokens.spacing ?? { xs: '4px', sm: '8px', md: '16px', lg: '24px', xl: '32px' },
-    typography: dsTokens.typography ?? { sans: 'Inter, system-ui, sans-serif', mono: 'ui-monospace, monospace' },
+    spacing: { xs: '4px', sm: '8px', md: '16px', lg: '24px', xl: '32px' },
+    typography: { sans: 'Inter, system-ui, sans-serif', mono: 'ui-monospace, monospace' },
   };
 
   return { components, styleTokens };
 }
 
+function pascalCase(s: string): string {
+  return s.replace(/[^a-zA-Z0-9]+/g, ' ').trim().split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join('') || 'Component';
+}
 function matchEntity(componentName: string, system: SystemOutput | null): string | undefined {
   if (!system) return undefined;
   const lower = componentName.toLowerCase();

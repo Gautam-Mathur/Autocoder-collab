@@ -1,53 +1,91 @@
 /**
- * QUEEN — Intent interpreter (Fusion mode).
- * Adapts AutoCoder's existing UnderstandingResult (already produced upstream
- * by the deep-understanding-engine) into RuFlo's TaskSpec. Falls back to
- * keyword extraction only when no understanding has been provided.
+ * QUEEN — Intent interpreter
+ * Interprets raw prompts into TaskSpec.
  *
- * Reads:  legacyCtx.understanding, raw prompt
+ * Reads:  raw prompt
  * Writes: TaskSpec (mem.queen.taskSpec)
  */
 
+import { runSLM, registerStageTemplate } from '../../slm-inference-engine.js';
 import type { TaskSpec } from '../types.js';
 
-interface LegacyCtx {
-  understanding?: {
-    level1_intent?: { primaryGoal?: string; userType?: string; coreFlow?: string };
-    level2_domain?: { primaryDomain?: { id?: string; name?: string } };
-    level3_entities?: { mentionedEntities?: Array<{ name: string }> };
-    explicitNonGoals?: string[];
-  };
-  plan?: { projectName?: string; projectDescription?: string };
-  requestedFeatures?: string[];
-}
+registerStageTemplate({
+  stage: 'Queen',
+  systemPrompt: `You are the Queen Orchestrator agent in a multi-agent system.
+Your job is to interpret raw user requirements into a structured task specification.
+You must determine:
+1. The domain (e.g. ecommerce, hospitality, productivity, etc.)
+2. The primary user type (e.g. customer, admin, team member)
+3. The core flow (how users navigate the app)
+4. A list of must-have features (at least 3-5 specific features)
+5. Explicit non-goals (what is out of scope)
+6. Customized tasks for each agent in the pipeline (Planner, Architect, System, Designer, Coder, Tester, Debugger, Security, Reviewer, Refiner) on what they should focus on based on the request. Make sure these instructions are clear and specific to the request.`,
+  userPromptBuilder: (context: Record<string, any>) => `Interpret this user request:\n\n"${context.prompt}"`,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      domain: { type: 'string' },
+      userType: { type: 'string' },
+      coreFlow: { type: 'string' },
+      mustHaveFeatures: { type: 'array', items: { type: 'string' } },
+      explicitNonGoals: { type: 'array', items: { type: 'string' } },
+      agentTasks: {
+        type: 'object',
+        properties: {
+          Planner: { type: 'string' },
+          Architect: { type: 'string' },
+          System: { type: 'string' },
+          Designer: { type: 'string' },
+          Coder: { type: 'string' },
+          Tester: { type: 'string' },
+          Debugger: { type: 'string' },
+          Security: { type: 'string' },
+          Reviewer: { type: 'string' },
+          Refiner: { type: 'string' }
+        },
+        required: ['Planner', 'Architect', 'System', 'Designer', 'Coder', 'Tester', 'Debugger', 'Security', 'Reviewer', 'Refiner']
+      }
+    },
+    required: ['domain', 'userType', 'coreFlow', 'mustHaveFeatures', 'explicitNonGoals', 'agentTasks']
+  },
+  maxTokens: 1024,
+  temperature: 0.2
+});
 
-export async function runQueen(prompt: string, legacyCtx?: LegacyCtx): Promise<TaskSpec> {
-  const u = legacyCtx?.understanding;
-  if (u) {
-    const domain =
-      u.level2_domain?.primaryDomain?.id?.toLowerCase() ||
-      u.level2_domain?.primaryDomain?.name?.toLowerCase().replace(/\s+/g, '-') ||
-      'general';
-    const features = (legacyCtx?.requestedFeatures && legacyCtx.requestedFeatures.length > 0)
-      ? legacyCtx.requestedFeatures
-      : extractFeatures(prompt);
-    return {
-      domain,
-      userType: u.level1_intent?.userType || 'end user',
-      coreFlow: u.level1_intent?.coreFlow || u.level1_intent?.primaryGoal || 'user interacts with the app',
-      mustHaveFeatures: features.length > 0 ? features : ['main view', 'list items', 'create item'],
-      explicitNonGoals: u.explicitNonGoals ?? [],
-    };
+export async function runQueen(prompt: string, _legacyCtx?: any): Promise<TaskSpec> {
+  const slmResult = await runSLM<TaskSpec>('Queen', { prompt });
+  if (slmResult.success && slmResult.data) {
+    return slmResult.data;
   }
 
   // Standalone fallback (RuFlo without upstream understanding).
-  const text = (prompt || legacyCtx?.plan?.projectDescription || legacyCtx?.plan?.projectName || '').toLowerCase();
+  const text = (prompt || '').toLowerCase();
+  const domain = detectDomain(text);
+  const userType = detectUserType(text);
+  const coreFlow = extractCoreFlow(text);
+  const mustHaveFeatures = extractFeatures(text);
+  const explicitNonGoals = extractNonGoals(text);
+
+  const agentTasks: Record<string, string> = {
+    Planner: `Create a detailed feature plan for the ${domain} application catering to ${userType}.`,
+    Architect: `Plan modules and file dependencies for ${domain} application core flow: ${coreFlow}.`,
+    System: `Define logical models and API endpoints for features: ${mustHaveFeatures.join(', ')}.`,
+    Designer: `Establish design tokens and UI components.`,
+    Coder: `Generate source code files.`,
+    Tester: `Author tests.`,
+    Debugger: `Fix errors.`,
+    Security: `Audit security.`,
+    Reviewer: `Rate quality.`,
+    Refiner: `Polish and optimize.`
+  };
+
   return {
-    domain: detectDomain(text),
-    userType: detectUserType(text),
-    coreFlow: extractCoreFlow(text),
-    mustHaveFeatures: extractFeatures(text),
-    explicitNonGoals: extractNonGoals(text),
+    domain,
+    userType,
+    coreFlow,
+    mustHaveFeatures: mustHaveFeatures.length > 0 ? mustHaveFeatures : ['main view', 'list items', 'create item'],
+    explicitNonGoals,
+    agentTasks,
   };
 }
 

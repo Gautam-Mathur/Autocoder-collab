@@ -1,17 +1,16 @@
 /**
- * SECURITY — Cross-cutting scanner (Fusion mode).
- * Wraps AutoCoder's `security-module.scanForVulnerabilities` (XSS, SQLi,
- * hard-coded secrets, command injection, etc.). Falls back to a deterministic
- * mini-scanner if the real module fails to load.
+ * SECURITY — Cross-cutting scanner
+ * Auditing generated code for vulnerabilities and policy compliance.
  *
- * Reads:  legacyCtx.files (post-Debugger)
+ * Reads:  mem.taskSpec, mem.coder.sourceFiles, mem.system (optional)
  * Writes: SecurityOutput { securityReport }
  */
 
 import { ExecutiveMemory } from '../executive-memory.js';
 import { StageLedger } from '../stage-ledger.js';
+import { runSLM, registerStageTemplate } from '../../slm-inference-engine.js';
 import type { AgentRunContext } from '../agent-runner.js';
-import type { CoderOutput, SecurityIssue, SecurityOutput, SystemOutput } from '../types.js';
+import type { CoderOutput, SecurityIssue, SecurityOutput, SystemOutput, TaskSpec } from '../types.js';
 
 const SECRET_PATTERNS = [
   /sk_live_[A-Za-z0-9]{16,}/,
@@ -19,49 +18,75 @@ const SECRET_PATTERNS = [
   /-----BEGIN (RSA |OPENSSH )?PRIVATE KEY-----/,
 ];
 
+registerStageTemplate({
+  stage: 'Security',
+  systemPrompt: `You are the Security agent in a multi-agent system.
+Your job is to read the Queen's task specification, the Coder's generated sourceFiles, and optional System API routes/models, then audit them for security vulnerabilities (e.g. SQL injection, XSS, insecure storage, authentication bypass, eval use, hardcoded credentials, CSRF).
+Specifically, you must generate a JSON object with:
+- securityReport:
+  - issues: Array of security issues found. Each has:
+    - severity: "critical" | "high" | "medium" | "low"
+    - message: description of the vulnerability and how to fix it
+    - location: file path or route handler where the issue is located
+  - scannedAt: timestamp in milliseconds (integer)
+
+Focus on this instruction: "{agentTask}"`,
+  userPromptBuilder: (context: Record<string, any>) => `Queen's Task Spec:\n${JSON.stringify(context.taskSpec, null, 2)}\n\nSystem Specs:\n${JSON.stringify(context.system, null, 2)}\n\nCoder Source Files:\n${JSON.stringify(context.sourceFiles, null, 2)}`,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      securityReport: {
+        type: 'object',
+        properties: {
+          issues: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
+                message: { type: 'string' },
+                location: { type: 'string' }
+              },
+              required: ['severity', 'message', 'location']
+            }
+          },
+          scannedAt: { type: 'integer' }
+        },
+        required: ['issues', 'scannedAt']
+      }
+    },
+    required: ['securityReport']
+  },
+  maxTokens: 1536,
+  temperature: 0.1
+});
+
 export async function runSecurity(
   _mem: ExecutiveMemory,
   ledger: StageLedger,
   runCtx: AgentRunContext,
 ): Promise<SecurityOutput> {
+  const taskSpec = ledger.read('Security', 'taskSpec') as TaskSpec | null;
   const system = ledger.read('Security', 'system') as SystemOutput | null;
   const coder  = ledger.read('Security', 'coder')  as CoderOutput  | null;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = runCtx.legacyCtx as any | undefined;
-  const issues: SecurityIssue[] = [];
-
-  // PRIMARY PATH — wrap scanForVulnerabilities.
-  if (ctx?.files && Array.isArray(ctx.files) && ctx.files.length > 0) {
-    try {
-      const sm = await import('../../security-module.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (sm as any).scanForVulnerabilities(ctx.files) as {
-        issues?: Array<{ severity?: string; message?: string; description?: string; file?: string; location?: string }>;
-        vulnerabilities?: Array<{ severity?: string; message?: string; description?: string; file?: string; location?: string }>;
-      };
-      const list = result?.issues ?? result?.vulnerabilities ?? [];
-      for (const v of list) {
-        const sev = (v.severity ?? 'medium').toLowerCase();
-        const severity: SecurityIssue['severity'] =
-          sev === 'critical' ? 'critical' : sev === 'high' ? 'high' : sev === 'low' ? 'low' : 'medium';
-        issues.push({
-          severity,
-          message: v.message ?? v.description ?? 'Security issue',
-          location: v.location ?? v.file,
-        });
-      }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Security] scanForVulnerabilities failed, using fallback:', (e as Error).message);
-    }
+  if (!taskSpec || !coder) {
+    throw new Error('Security: missing taskSpec or coder output in memory');
   }
 
-  // Always also run the lightweight rules — they catch the obvious things
-  // and act as a safety net when the heavy scanner is unavailable.
+  const agentTask = taskSpec.agentTasks?.Security || 'Audit security.';
+
+  const slmResult = await runSLM<SecurityOutput>('Security', { taskSpec, system, sourceFiles: coder.sourceFiles, agentTask });
+  if (slmResult.success && slmResult.data) {
+    return slmResult.data;
+  }
+
+  // Standalone fallback: light regex rules scanner.
+  const issues: SecurityIssue[] = [];
+
   if (system) {
     for (const r of system.apiRoutes) {
-      if (r.method !== 'GET' && !issues.some((i) => i.location === r.handler)) {
+      if (r.method !== 'GET') {
         issues.push({
           severity: 'medium',
           message: `Mutating route ${r.method} ${r.path} has no documented auth check`,
@@ -70,16 +95,15 @@ export async function runSecurity(
       }
     }
   }
-  if (coder) {
-    for (const [file, content] of Object.entries(coder.sourceFiles)) {
-      if (/\beval\s*\(/.test(content) && !issues.some((i) => i.location === file && /eval/.test(i.message))) {
-        issues.push({ severity: 'high', message: 'eval() use detected', location: file });
-      }
-      for (const pat of SECRET_PATTERNS) {
-        if (pat.test(content) && !issues.some((i) => i.location === file && /secret/i.test(i.message))) {
-          issues.push({ severity: 'critical', message: 'Possible hard-coded secret', location: file });
-          break;
-        }
+
+  for (const [file, content] of Object.entries(coder.sourceFiles)) {
+    if (/\beval\s*\(/.test(content)) {
+      issues.push({ severity: 'high', message: 'eval() use detected', location: file });
+    }
+    for (const pat of SECRET_PATTERNS) {
+      if (pat.test(content)) {
+        issues.push({ severity: 'critical', message: 'Possible hard-coded secret', location: file });
+        break;
       }
     }
   }

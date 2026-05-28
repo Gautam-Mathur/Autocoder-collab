@@ -1,12 +1,17 @@
 /**
- * RuFlo Fusion — Sequential controller
+ * RuFlo Fusion — Parallel DAG Controller
  *
- * Orchestrates the 10 agents in fixed order with:
- *   - shouldRun() surgical-execution gate
- *   - checkHealth() best-effort SLM probe
- *   - runAgent() with per-agent timeout + ownership-enforced ledger write
- *   - propagateInvalidation() to mark downstream agents dirty
- *   - validateConsistency() hard contract gate after Architect & Designer
+ * Orchestrates the 11 agents in topological levels:
+ *   - Level 0: Queen
+ *   - Level 1: Planner
+ *   - Level 2: [System & Designer (Parallel)]
+ *   - Level 3: Architect -> Contract Validation Loop
+ *   - Level 4: Coder (Pass 1 - Scaffold)
+ *   - Level 5: Tester
+ *   - Level 6: [Debugger & Security & Reviewer (Parallel)]
+ *   - Level 7: Coder (Pass 2 - Harden)
+ *   - Level 8: Refiner
+ *   - Level 9: Coder (Pass 3 - Polish)
  *
  * Returns a fully populated DeliveryReport via the Ship Gate.
  */
@@ -16,32 +21,28 @@ import { propagateInvalidation, shouldRun } from './dependency-graph.js';
 import { ExecutiveMemory } from './executive-memory.js';
 import { drainEvents, logEvent } from './observability-sink.js';
 import { shipGate } from './ship-gate.js';
-import { StageLedger, DriftEvent, OWNERSHIP } from './stage-ledger.js';
-import type { AgentStage } from '@workspace/core/ExecutiveMemory';
+import { StageLedger } from './stage-ledger.js';
 import {
   HaltEvent,
   SkipEvent,
   checkHealth,
   runAgent,
-  OWNED_FIELD,
   type AgentRunContext,
 } from './agent-runner.js';
-import { emitDecision, emitDriftEvent } from '../telemetry/sinks.js';
 import type { AgentName, DeliveryReport } from './types.js';
 
-// Security runs AFTER Coder + Debugger so it can scan emitted source files.
-// Placing it earlier (before Coder) leaves it nothing to scan and was the
-// cause of an earlier no-op-Security bug.
 const AGENT_ORDER: AgentName[] = [
   'Queen',
   'Planner',
-  'Architect',
   'System',
   'Designer',
+  'Architect',
   'Coder',
-  'Debugger',
-  'Reviewer',
   'Tester',
+  'Debugger',
+  'Security',
+  'Reviewer',
+  'Refiner'
 ];
 
 const MAX_CONTRACT_RETRIES = 3;
@@ -57,14 +58,6 @@ export interface RuFloRunOptions {
   ) => void;
 }
 
-// Build a per-agent one-line summary from the live ExecutiveMemory right
-// after the agent finishes. Surfaced in the orchestrator's "complete"
-// thinking step so users see what each agent actually produced instead of
-// a bland "Queen complete".
-// Multi-line, intel-rich per-agent summary. Surfaced in the orchestrator's
-// "complete" thinking step so users see WHAT each agent produced, not just
-// "Queen complete". Each summary lists concrete artifacts (top features,
-// modules, routes, components, files, sample security issue, …).
 function summarizeAgent(agent: AgentName, mem: ExecutiveMemory): string {
   const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
   const sample = <T,>(xs: T[], n: number, fmt: (x: T) => string): string =>
@@ -175,7 +168,7 @@ function summarizeAgent(agent: AgentName, mem: ExecutiveMemory): string {
       return [
         `Repaired ${d.repairDiffs.length} files (${(bytes / 1024).toFixed(1)} KB patched).`,
         `Files touched: ${topRepaired}`,
-        'Common fixes: missing imports, unused vars, mistyped props, route/handler mismatches — all applied in-place to ctx.files.',
+        'Common fixes: missing imports, unused vars, mistyped props, route/handler mismatches.',
       ].join('\n');
     }
     case 'Security': {
@@ -218,6 +211,16 @@ function summarizeAgent(agent: AgentName, mem: ExecutiveMemory): string {
         'Tests cover API route happy/error paths and key UI components — runnable with the project test command.',
       ].join('\n');
     }
+    case 'Refiner': {
+      const r = mem.refiner;
+      if (!r) return 'no optimizations captured';
+      const opts = sample(r.optimizations, 5, o => `\`${o.file}\`: ${o.recommendation}`);
+      return [
+        `Score before: ${r.scoreBefore} · expected score after: ${r.scoreExpected}`,
+        `Optimizations suggested: ${r.optimizations.length}`,
+        `Sample optimizations:\n  - ${opts || 'none'}`,
+      ].join('\n');
+    }
     default:
       return '';
   }
@@ -231,17 +234,11 @@ export async function runRuFloPipeline(opts: RuFloRunOptions): Promise<DeliveryR
 
   const runCtx: AgentRunContext = { prompt: opts.prompt, legacyCtx: opts.legacyCtx };
 
-  // First pass through the agent order. The contract gate may push us into
-  // a bounded re-run loop for a specific agent.
-  let contractRetries = 0;
-
-  for (let i = 0; i < AGENT_ORDER.length; i++) {
-    const agent = AGENT_ORDER[i];
-
+  const runAgentStep = async (agent: AgentName) => {
     if (!shouldRun(agent, mem)) {
       logEvent({ type: 'agent_skipped', agent, reason: 'not_invalidated' });
       opts.onAgentEvent?.(agent, 'skipped');
-      continue;
+      return;
     }
 
     try {
@@ -249,48 +246,8 @@ export async function runRuFloPipeline(opts: RuFloRunOptions): Promise<DeliveryR
       const t0 = Date.now();
       opts.onAgentEvent?.(agent, 'start');
       await runAgent(agent, ledger, mem, runCtx);
-      // Pipe decision to LangSmith/OTel
-      const owned = OWNED_FIELD[agent as any];
-      const newDecision = mem.decisions.find(d => d.agent === agent && d.field === owned);
-      if (newDecision) {
-        emitDecision(newDecision.agent, newDecision.field, newDecision.value, newDecision.rationale, opts.legacyCtx?.conversationId);
-      }
       timings[agent] = Date.now() - t0;
       opts.onAgentEvent?.(agent, 'complete', summarizeAgent(agent, mem));
-
-      // Hard contract gate after Architect.
-      if (agent === 'Architect') {
-        const result = validateConsistency(mem);
-        if (!result.ok) {
-          if (contractRetries < MAX_CONTRACT_RETRIES) {
-            contractRetries++;
-            const responsible = findResponsibleAgents(result.violations);
-            for (const a of responsible) mem.invalidated.add(a);
-            // Rewind to the responsible agent (Architect) and retry.
-            i = AGENT_ORDER.indexOf('Architect') - 1;
-            continue;
-          }
-          throw new ContractViolationError(result.violations);
-        }
-        logEvent({ type: 'contract_pass', agent: 'Architect', contractsChecked: 1 });
-      }
-
-      // Hard contract gate after Designer (covers Contract 2: data → UI).
-      if (agent === 'Designer') {
-        const result = validateConsistency(mem);
-        if (!result.ok) {
-          if (contractRetries < MAX_CONTRACT_RETRIES) {
-            contractRetries++;
-            const responsible = findResponsibleAgents(result.violations);
-            for (const a of responsible) mem.invalidated.add(a);
-            i = AGENT_ORDER.indexOf('Designer') - 1;
-            continue;
-          }
-          throw new ContractViolationError(result.violations);
-        }
-        logEvent({ type: 'contract_pass', agent: 'Designer', contractsChecked: 2 });
-      }
-
       propagateInvalidation(agent, mem);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -298,48 +255,89 @@ export async function runRuFloPipeline(opts: RuFloRunOptions): Promise<DeliveryR
       if (err instanceof HaltEvent) {
         logEvent({ type: 'halt_event', agent, reason: 'timeout', limitMs: err.limitMs });
         opts.onAgentEvent?.(agent, 'halt');
-      } else if (err instanceof DriftEvent) {
-        logEvent({ type: 'drift_event', agent: agent as any, field: err.field });
-        opts.onAgentEvent?.(agent, 'halt');
-        emitDriftEvent(agent, err.field, err.value, err.rationale, opts.legacyCtx?.conversationId);
-        const owner = Object.entries(OWNERSHIP).find(([, fields]) => fields.includes(err.field))?.[0] as AgentStage | undefined;
-        if (owner && owner !== agent) {
-          mem.amendmentRequests.push({
-            requestor: agent as AgentStage,
-            field: err.field,
-            value: err.value,
-            rationale: err.rationale,
-            timestamp: Date.now(),
-            status: 'pending'
-          });
-          const ownerIndex = AGENT_ORDER.indexOf(owner as any);
-          const currentIndex = AGENT_ORDER.indexOf(agent);
-          if (ownerIndex !== -1 && ownerIndex < currentIndex) {
-            for (let j = ownerIndex; j < currentIndex; j++) {
-              mem.invalidated.add(AGENT_ORDER[j] as AgentStage);
-            }
-            i = ownerIndex - 1;
-            continue;
-          }
-        }
       } else if (err instanceof SkipEvent) {
         logEvent({ type: 'skip_event', agent, reason: err.reason });
         opts.onAgentEvent?.(agent, 'skipped');
-        continue;
-      } else if (err instanceof ContractViolationError) {
-        // Final contract failure — bubble up summary and continue with what
-        // we have, so the user still gets a delivery report.
-        break;
+      } else {
+        opts.onAgentEvent?.(agent, 'halt', msg);
       }
-      // Non-fatal: continue to next agent so Reviewer / Tester / Ship Gate
-      // can still run on partial state. Coder failure means Ship Gate will
-      // produce template fallbacks.
-      continue;
     }
+  };
+
+  // --- PASS 1: SCAFFOLDING & BLUEPRINT ---
+  // Level 0: Queen
+  await runAgentStep('Queen');
+
+  // Level 1: Planner
+  await runAgentStep('Planner');
+
+  // Levels 2 & 3: Parallel System & Designer followed by Architect + Contract Validation Loop
+  let contractRetries = 0;
+  while (true) {
+    // Level 2 (Parallel)
+    await Promise.all([
+      runAgentStep('System'),
+      runAgentStep('Designer')
+    ]);
+
+    // Level 3
+    await runAgentStep('Architect');
+
+    // Contract checks: validate if all outputs are in memory
+    if (mem.planner && mem.architect && mem.system && mem.designer) {
+      const result = validateConsistency(mem);
+      if (!result.ok) {
+        if (contractRetries < MAX_CONTRACT_RETRIES) {
+          contractRetries++;
+          const responsible = findResponsibleAgents(result.violations);
+          for (const a of responsible) {
+            mem.invalidated.add(a);
+          }
+          continue;
+        }
+        errors.push(`[Contract] Adherence check failed after ${contractRetries} retries: ` +
+          result.violations.map(v => v.description).join('; ')
+        );
+      } else {
+        logEvent({ type: 'contract_pass', agent: 'Architect', contractsChecked: 1 });
+        logEvent({ type: 'contract_pass', agent: 'Designer', contractsChecked: 2 });
+      }
+    }
+    break;
   }
 
+  // Level 4: Coder Pass 1 (Scaffold)
+  await runAgentStep('Coder');
+
+
+  // --- PASS 2: TESTING & HARDENING ---
+  // Level 5: Tester
+  await runAgentStep('Tester');
+
+  // Level 6: Parallel Audits (Debugger, Security, Reviewer)
+  await Promise.all([
+    runAgentStep('Debugger'),
+    runAgentStep('Security'),
+    runAgentStep('Reviewer')
+  ]);
+
+  // Level 7: Coder Pass 2 (Harden/Functionality)
+  // We explicitly mark Coder as invalidated to force Pass 2 to run
+  mem.invalidated.add('Coder');
+  await runAgentStep('Coder');
+
+
+  // --- PASS 3: OPTIMIZATION & SHIP ---
+  // Level 8: Refiner
+  await runAgentStep('Refiner');
+
+  // Level 9: Coder Pass 3 (Polish)
+  // We explicitly mark Coder as invalidated to force Pass 3 to run
+  mem.invalidated.add('Coder');
+  await runAgentStep('Coder');
+
+
   // Apply Debugger repairs onto Coder's source files BEFORE the Ship Gate.
-  // Without this step the Debugger's bounded patches would have no effect.
   const merged: Record<string, string> = { ...(mem.coder?.sourceFiles ?? {}) };
   for (const diff of mem.debugger?.repairDiffs ?? []) {
     merged[diff.file] = diff.content;

@@ -1,46 +1,84 @@
 /**
- * TESTER — Test file author (Fusion mode).
- * Wraps AutoCoder's `test-generator.generateTestFiles`. Writes tests both
- * into legacyCtx.testFiles and the RuFlo memory map.
+ * TESTER — Test file author
+ * Generates test files and detects failures/bugs in emitted source files.
  *
- * Reads:  legacyCtx.plan, legacyCtx.reasoning, legacyCtx.detectedDomain
- * Writes: TesterOutput { testFiles }
+ * Reads:  mem.taskSpec, mem.coder.sourceFiles, mem.system (optional), mem.architect (optional)
+ * Writes: TesterOutput { testFiles, failureReport }
  */
 
 import { ExecutiveMemory } from '../executive-memory.js';
 import { StageLedger } from '../stage-ledger.js';
+import { runSLM, registerStageTemplate } from '../../slm-inference-engine.js';
 import type { AgentRunContext } from '../agent-runner.js';
-import type { ArchitectOutput, SystemOutput, TesterOutput } from '../types.js';
+import type { ArchitectOutput, SystemOutput, TesterOutput, TaskSpec, CoderOutput } from '../types.js';
+
+registerStageTemplate({
+  stage: 'Tester',
+  systemPrompt: `You are the Tester agent in a multi-agent system.
+Your job is to read the Queen's task specification and the Coder's generated sourceFiles, and then author automated tests and identify any bugs/issues.
+Specifically, you must generate a JSON object with:
+1. testFiles: Record mapping test file paths (e.g. "src/__tests__/App.test.tsx") to their test file content (Vitest test code). Focus on writing unit or integration tests for the generated pages and modules.
+2. failureReport: Array of failure entries. If you find any functional bugs, styling issues, or security flaws in the coder's files, report them here. If no bugs are found, return an empty array [].
+   Each failure entry has:
+   - id: e.g. "BUG001"
+   - file: path of the file containing the bug
+   - location: function, line, or area where the bug exists
+   - severity: "functional" | "low-security" | "high-security" | "style"
+   - description: clear description of the bug/issue
+   - reproductionSteps: steps to reproduce or trigger the bug
+
+Focus on this instruction: "{agentTask}"`,
+  userPromptBuilder: (context: Record<string, any>) => `Queen's Task Spec:\n${JSON.stringify(context.taskSpec, null, 2)}\n\nCoder Source Files:\n${JSON.stringify(context.sourceFiles, null, 2)}`,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      testFiles: { type: 'object', additionalProperties: { type: 'string' } },
+      failureReport: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            file: { type: 'string' },
+            location: { type: 'string' },
+            severity: { type: 'string', enum: ['functional', 'low-security', 'high-security', 'style'] },
+            description: { type: 'string' },
+            reproductionSteps: { type: 'string' }
+          },
+          required: ['id', 'file', 'location', 'severity', 'description', 'reproductionSteps']
+        }
+      }
+    },
+    required: ['testFiles', 'failureReport']
+  },
+  maxTokens: 1536,
+  temperature: 0.2
+});
 
 export async function runTester(
   _mem: ExecutiveMemory,
   ledger: StageLedger,
   runCtx: AgentRunContext,
 ): Promise<TesterOutput> {
+  const taskSpec = ledger.read('Tester', 'taskSpec') as TaskSpec | null;
+  const coder = ledger.read('Tester', 'coder') as CoderOutput | null;
   const architect = ledger.read('Tester', 'architect') as ArchitectOutput | null;
   const system    = ledger.read('Tester', 'system')    as SystemOutput    | null;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = runCtx.legacyCtx as any | undefined;
-  const testFiles: Record<string, string> = {};
-
-  // PRIMARY PATH — wrap generateTestFiles when reasoning is available.
-  if (ctx?.plan && ctx?.reasoning) {
-    try {
-      const tg = await import('../../test-generator.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const files = (tg as any).generateTestFiles(ctx.plan, ctx.reasoning, ctx.detectedDomain) as Array<{ path: string; content: string; language?: string }>;
-      if (Array.isArray(files)) {
-        for (const f of files) testFiles[f.path] = f.content;
-        ctx.testFiles = files;
-      }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Tester] generateTestFiles failed:', (e as Error).message);
-    }
+  if (!taskSpec || !coder) {
+    throw new Error('Tester: missing taskSpec or coder output in memory');
   }
 
-  // Always emit minimal smoke tests on top so we have at least one per model/page.
+  const agentTask = taskSpec.agentTasks?.Tester || 'Author tests and find code failures.';
+
+  const slmResult = await runSLM<TesterOutput>('Tester', { taskSpec, sourceFiles: coder.sourceFiles, agentTask });
+  if (slmResult.success && slmResult.data) {
+    return slmResult.data;
+  }
+
+  // Standalone fallback: emit minimal smoke tests on top so we have at least one per model/page.
+  const testFiles: Record<string, string> = {};
+
   if (system) {
     for (const m of system.logic.dataModels) {
       const file = `src/__tests__/${m.name.toLowerCase()}.smoke.test.ts`;
@@ -58,5 +96,5 @@ export async function runTester(
     }
   }
 
-  return { testFiles };
+  return { testFiles, failureReport: [] };
 }

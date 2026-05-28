@@ -24,6 +24,7 @@ import { runDebugger } from './agents/debugger.js';
 import { runSecurity } from './agents/security.js';
 import { runReviewer } from './agents/reviewer.js';
 import { runTester } from './agents/tester.js';
+import { runRefiner } from './agents/refiner.js';
 
 /** Per-agent execution budget in milliseconds. */
 export const TIMEOUTS: Readonly<Record<AgentName, number>> = Object.freeze({
@@ -37,6 +38,7 @@ export const TIMEOUTS: Readonly<Record<AgentName, number>> = Object.freeze({
   Reviewer: 5000,
   Tester: 8000,
   Security: 5000,
+  Refiner: 8000,
 });
 
 /** Memory field this agent is allowed to write. */
@@ -51,6 +53,7 @@ export const OWNED_FIELD: Readonly<Record<AgentName, string>> = Object.freeze({
   Security: 'security',
   Reviewer: 'reviewer',
   Tester: 'tester',
+  Refiner: 'refiner',
 });
 
 export class SkipEvent extends Error {
@@ -99,45 +102,25 @@ export async function runAgent(
   mem: ExecutiveMemory,
   runCtx: AgentRunContext,
 ): Promise<void> {
-  const limitMs = 10000;
-  const warningMs = 3000;
+  const limitMs = TIMEOUTS[agent];
   logEvent({ type: 'agent_start', agent, timestamp: Date.now() });
   const startMs = Date.now();
 
-  await checkHealth(agent);
-
-  let warningTimer: ReturnType<typeof setTimeout> | undefined;
-  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const warningPromise = new Promise<void>((resolve) => {
-    warningTimer = setTimeout(() => {
-      logEvent({ type: 'slm_unavailable', agent, fallback: 'rules-only' });
-      // eslint-disable-next-line no-console
-      console.warn(`[RuFlo:${agent}] Warning: agent execution exceeded 3000ms, checking health...`);
-      resolve();
-    }, warningMs);
-  });
-
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutTimer = setTimeout(() => reject(new HaltEvent(agent, limitMs)), limitMs);
+    timer = setTimeout(() => reject(new HaltEvent(agent, limitMs)), limitMs);
   });
 
   try {
     const result = await Promise.race([
-      (async () => {
-        const res = await executeAgentLogic(agent, ledger, mem, runCtx);
-        if (warningTimer) clearTimeout(warningTimer);
-        return res;
-      })(),
+      executeAgentLogic(agent, ledger, mem, runCtx),
       timeoutPromise,
     ]);
-    // Allow the warningPromise to settle or be ignored since warningTimer is cleared
     validateOutputShape(agent, result);
-    ledger.write(agent, OWNED_FIELD[agent] as any, result);
+    ledger.write(agent, OWNED_FIELD[agent], result);
     logEvent({ type: 'agent_complete', agent, durationMs: Date.now() - startMs });
   } finally {
-    if (warningTimer) clearTimeout(warningTimer);
-    if (timeoutTimer) clearTimeout(timeoutTimer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -168,6 +151,8 @@ async function executeAgentLogic(
       return runReviewer(mem, ledger, runCtx);
     case 'Tester':
       return runTester(mem, ledger, runCtx);
+    case 'Refiner':
+      return runRefiner(mem, ledger, runCtx);
     default: {
       const _exhaustive: never = agent;
       throw new Error(`Unknown agent: ${String(_exhaustive)}`);
@@ -222,6 +207,11 @@ function validateOutputShape(agent: AgentName, result: unknown): void {
     case 'Tester':
       if (!r.testFiles || typeof r.testFiles !== 'object') {
         throw new Error(`Tester output missing testFiles{}`);
+      }
+      break;
+    case 'Refiner':
+      if (typeof r.scoreBefore !== 'number' || typeof r.scoreExpected !== 'number' || !Array.isArray(r.optimizations)) {
+        throw new Error(`Refiner output missing scoreBefore/scoreExpected/optimizations`);
       }
       break;
   }

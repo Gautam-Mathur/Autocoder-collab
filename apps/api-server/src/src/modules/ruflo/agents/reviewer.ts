@@ -1,15 +1,14 @@
 /**
- * REVIEWER — Quality scorer (Fusion mode, read-only).
- * Wraps AutoCoder's `code-quality-engine.analyzeCodeQuality`,
- * `project-graph.buildProjectGraph`, and `semantic-validator.validateSemantics`.
- * Combines their findings into RuFlo's qualityScore + annotations.
+ * REVIEWER — Quality scorer
+ * Evaluates overall code quality, calculates a quality score, and generates annotations.
  *
- * Reads:  legacyCtx.files, legacyCtx.plan
+ * Reads:  mem.taskSpec, mem.coder.sourceFiles, mem.security, mem.debugger, mem.architect
  * Writes: ReviewerOutput { qualityScore, annotations }
  */
 
 import { ExecutiveMemory } from '../executive-memory.js';
 import { StageLedger } from '../stage-ledger.js';
+import { runSLM, registerStageTemplate } from '../../slm-inference-engine.js';
 import type { AgentRunContext } from '../agent-runner.js';
 import type {
   Annotation,
@@ -18,101 +17,81 @@ import type {
   DebuggerOutput,
   ReviewerOutput,
   SecurityOutput,
+  TaskSpec,
 } from '../types.js';
+
+registerStageTemplate({
+  stage: 'Reviewer',
+  systemPrompt: `You are the Reviewer agent in a multi-agent system.
+Your job is to read the Queen's task specification, the Coder's generated sourceFiles, the Debugger's repairDiffs, and the Security's report, and then calculate a final quality score (0-100) and compile a list of code quality annotations.
+Specifically, you must generate a JSON object with:
+1. qualityScore: An integer from 0 to 100 representing the overall quality, completeness, and cleanliness of the code.
+2. annotations: Array of annotations. Each has:
+   - file: path of the file
+   - note: description of the warning, improvement suggestion, or error
+   - agent: "Reviewer"
+   - severity: "info" | "warn" | "error"
+
+Focus on this instruction: "{agentTask}"`,
+  userPromptBuilder: (context: Record<string, any>) => `Queen's Task Spec:\n${JSON.stringify(context.taskSpec, null, 2)}\n\nCoder Source Files:\n${JSON.stringify(context.sourceFiles, null, 2)}\n\nDebugger Repair Diffs:\n${JSON.stringify(context.repairDiffs, null, 2)}\n\nSecurity Report:\n${JSON.stringify(context.securityReport, null, 2)}`,
+  outputSchema: {
+    type: 'object',
+    properties: {
+      qualityScore: { type: 'integer' },
+      annotations: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            file: { type: 'string' },
+            note: { type: 'string' },
+            agent: { type: 'string', enum: ['Reviewer'] },
+            severity: { type: 'string', enum: ['info', 'warn', 'error'] }
+          },
+          required: ['file', 'note', 'agent', 'severity']
+        }
+      }
+    },
+    required: ['qualityScore', 'annotations']
+  },
+  maxTokens: 1536,
+  temperature: 0.2
+});
 
 export async function runReviewer(
   _mem: ExecutiveMemory,
   ledger: StageLedger,
   runCtx: AgentRunContext,
 ): Promise<ReviewerOutput> {
+  const taskSpec = ledger.read('Reviewer', 'taskSpec') as TaskSpec | null;
   const architect = ledger.read('Reviewer', 'architect') as ArchitectOutput | null;
   const coder     = ledger.read('Reviewer', 'coder')     as CoderOutput     | null;
   const security  = ledger.read('Reviewer', 'security')  as SecurityOutput  | null;
   const dbg       = ledger.read('Reviewer', 'debugger')  as DebuggerOutput  | null;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ctx = runCtx.legacyCtx as any | undefined;
+  if (!taskSpec || !coder) {
+    throw new Error('Reviewer: missing taskSpec or coder output in memory');
+  }
+
+  const agentTask = taskSpec.agentTasks?.Reviewer || 'Rate code quality and create annotations.';
+
+  const slmResult = await runSLM<ReviewerOutput>('Reviewer', {
+    taskSpec,
+    sourceFiles: coder.sourceFiles,
+    repairDiffs: dbg?.repairDiffs ?? [],
+    securityReport: security?.securityReport ?? { issues: [] },
+    agentTask
+  });
+
+  if (slmResult.success && slmResult.data) {
+    return slmResult.data;
+  }
+
+  // Standalone fallback: rules-based score calculation.
   const annotations: Annotation[] = [];
   let score = 100;
 
-  // Real quality engine — best-effort.
-  if (ctx?.files && ctx?.plan) {
-    try {
-      const cq = await import('../../code-quality-engine.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const report = (cq as any).analyzeCodeQuality(ctx.files, ctx.plan, ctx.detectedDomain);
-      ctx.qualityReport = report;
-
-      // Stage 13 — apply quality auto-fixes via the enhancement-patch
-      // applier. The applier runs dep/provider validation and writes back
-      // into ctx.files (Reviewer is read-only for source truth, but the
-      // legacy quality stage explicitly mutated files via this path).
-      if (Array.isArray(report?.fixes) && report.fixes.length > 0) {
-        try {
-          const ep = await import('../../enhancement-patch.js');
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const patch = (cq as any).buildQualityEnhancementPatch(ctx.files, report.fixes);
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (ep as any).applyEnhancementPatches(ctx, [patch], { stagePhase: 'quality' });
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn('[RuFlo:Reviewer] quality auto-fix apply failed:', (e as Error).message);
-        }
-      }
-
-      if (typeof report?.overallScore === 'number') {
-        score = Math.round(report.overallScore);
-      }
-      if (Array.isArray(report?.issues)) {
-        for (const issue of report.issues.slice(0, 50)) {
-          annotations.push({
-            file: String(issue.file ?? '(unknown)'),
-            note: String(issue.message ?? issue.description ?? 'Quality issue'),
-            agent: 'Reviewer',
-            severity: issue.severity === 'high' || issue.severity === 'critical' ? 'error' :
-                      issue.severity === 'low' ? 'info' : 'warn',
-          });
-        }
-      }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Reviewer] analyzeCodeQuality failed:', (e as Error).message);
-    }
-
-    // Build project graph + semantic validation.
-    try {
-      const pg = await import('../../project-graph/index.js');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const graph = (pg as any).buildProjectGraph(ctx.files);
-      ctx.projectGraph = graph;
-      try {
-        const sv = await import('../../semantic-validator.js');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const semantic = (sv as any).validateSemantics(graph, ctx.files);
-        ctx.semanticValidation = semantic;
-        if (Array.isArray(semantic?.errors)) {
-          for (const err of semantic.errors.slice(0, 20)) {
-            annotations.push({
-              file: String(err.file ?? '(unknown)'),
-              note: String(err.message ?? 'Semantic error'),
-              agent: 'Reviewer',
-              severity: 'error',
-            });
-            score -= 2;
-          }
-        }
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[RuFlo:Reviewer] validateSemantics failed:', (e as Error).message);
-      }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[RuFlo:Reviewer] buildProjectGraph failed:', (e as Error).message);
-    }
-  }
-
-  // Architect/Coder coverage check.
-  if (architect && coder) {
+  if (architect) {
     const generated = new Set(Object.keys(coder.sourceFiles));
     for (const node of architect.fileGraph) {
       if (!generated.has(node.file)) {
@@ -125,7 +104,6 @@ export async function runReviewer(
     }
   }
 
-  // Penalise security issues.
   if (security) {
     for (const issue of security.securityReport.issues) {
       annotations.push({
