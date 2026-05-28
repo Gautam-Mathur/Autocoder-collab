@@ -87,7 +87,7 @@ export async function checkHealth(_agent: AgentName): Promise<void> {
   // We just record the state in the observability sink.
   try {
     // dynamic import keeps this module loadable even if the SLM module fails
-    const mod = await import('../slm-inference-engine.js');
+    const mod = await import('../../slm-inference-engine.js');
     if (typeof mod.isSLMAvailable === 'function' && !mod.isSLMAvailable()) {
       logEvent({ type: 'slm_unavailable', agent: _agent, fallback: 'rules-only' });
     }
